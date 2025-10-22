@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import AMD_Tools4 as amd
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # 解析の将来拡張用（現状は未使用）
 from io import StringIO
 import copy
 from datetime import date as _date
@@ -48,7 +48,7 @@ ELEMENT_OPTIONS = {
 # ============================================================
 # 入力 UI
 # ============================================================
-xml_file = st.file_uploader("📂 10m標高メッシュXMLファイル（※10mのみ対応）", type="xml")
+xml_file = st.file_uploader("📂 10m標高メッシュXMLファイル（※10mのみ対応、±3 m許容）", type="xml")
 element_label = st.selectbox("気象要素を選択", list(ELEMENT_OPTIONS.keys()))
 element = ELEMENT_OPTIONS[element_label]
 date_sel = st.date_input("対象日を選択", value=_date.today())
@@ -56,43 +56,43 @@ date_sel = st.date_input("対象日を選択", value=_date.today())
 # ============================================================
 # ユーティリティ関数
 # ============================================================
-def parse_gml_tuplelist_xml_10m(xml_bytes: bytes, tol_m: float = 2.0):
+def parse_gml_tuplelist_xml_10m(xml_bytes: bytes, tol_m: float = 3.0):
     """
     基盤地図情報 標高（GML/XML）の <gml:tupleList> をパース。
-    格子解像度が約10m（±tol_m）かを緯度・経度方向でチェックし、
-    10mメッシュでない場合は ValueError を投げる。
+    10mメッシュ（±tol_m）かどうかを lat/long 両軸で判定し、必要なら gml:high の軸を入れ替えて再判定。
     戻り値:
-      nli10m (ny, nx), lat_grid (ny,), lon_grid (nx,), lalodomain [lat_min, lat_max, lon_min, lon_max]
+      elev (ny, nx), lat_grid (ny,), lon_grid (nx,), lalodomain [lat_min, lat_max, lon_min, lon_max], dy_m, dx_m
     """
     xml_str = xml_bytes.decode("utf-8")
     lines = xml_str.splitlines()
 
+    # --- tupleList 抽出 ---
     try:
         idx = lines.index('<gml:tupleList>')
     except ValueError:
-        idx = [i for i, l in enumerate(lines) if "<gml:tupleList" in l]
-        if not idx:
+        idxs = [i for i, l in enumerate(lines) if "<gml:tupleList" in l]
+        if not idxs:
             raise ValueError("gml:tupleList タグが見つかりません。")
-        idx = idx[0]
-
-    headers = lines[:idx]
+        idx = idxs[0]
     try:
         idx_end = lines.index('</gml:tupleList>')
     except ValueError:
-        idx_end = [i for i, l in enumerate(lines) if "</gml:tupleList>" in l]
-        if not idx_end:
+        idxs = [i for i, l in enumerate(lines) if "</gml:tupleList>" in l]
+        if not idxs:
             raise ValueError("</gml:tupleList> タグが見つかりません。")
-        idx_end = idx_end[0]
+        idx_end = idxs[0]
 
+    headers = lines[:idx]
     datalist = lines[idx + 1 : idx_end]
-    # tuple は "(x,y)" 形式が多い。2番目（標高値）を抽出。
+
+    # 2列目（標高値）を抽出
     try:
-        body = np.array([float(l.split(',')[1].rstrip(') \r\n')) for l in datalist])
+        body = np.array([float(l.split(',')[1].rstrip(') \r\n')) for l in datalist], dtype=float)
     except Exception:
         raise ValueError("標高データの読み取りに失敗しました（tupleListの構造が想定と異なります）。")
 
+    # --- ヘッダ抽出 ---
     def header(tag):
-        # <gml:lowerCorner> / <gml:upperCorner> / <gml:high> 等から中身を抜く
         hit = next((l for l in headers if f"<gml:{tag}>" in l or f"{tag}" in l), None)
         if hit is None:
             raise ValueError(f"ヘッダ {tag} が見つかりません。")
@@ -101,39 +101,78 @@ def parse_gml_tuplelist_xml_10m(xml_bytes: bytes, tol_m: float = 2.0):
 
     lats, lons = map(float, header("lowerCorner"))
     late, lone = map(float, header("upperCorner"))
-    high_vals = list(map(int, header("high")))
-    # gml:high は(最大インデックス)なので +1 が格子数
-    nola, nolo = [x + 1 for x in high_vals[::-1]]  # [lat_count, lon_count] に合わせる
+    high_vals = list(map(int, header("high")))  # 例: "1999 1999" のような2値
 
-    # 格子間隔（度）
-    dlat = (late - lats) / max(nola - 1, 1)
-    dlon = (lone - lons) / max(nolo - 1, 1)
+    # --- 候補の並びを2通り試す: (ny, nx) = (high2+1, high1+1) と (high1+1, high2+1)
+    candidates = []
+    for rev in [True, False]:
+        hv = high_vals[::-1] if rev else high_vals[:]
+        if len(hv) < 2:
+            continue
+        ny, nx = hv[0] + 1, hv[1] + 1
+        if ny * nx != len(body):
+            continue  # この並びは合わない
+        # 度→メートル換算
+        dlat = (late - lats) / max(ny - 1, 1)
+        dlon = (lone - lons) / max(nx - 1, 1)
+        mean_lat = (lats + late) / 2.0
+        m_per_deg_lat = 111_320.0
+        m_per_deg_lon = 111_320.0 * math.cos(math.radians(mean_lat))
+        dy_m = abs(dlat) * m_per_deg_lat
+        dx_m = abs(dlon) * max(m_per_deg_lon, 1e-9)
+        # 10m への適合度（小さいほど良い）
+        score = abs(dy_m - 10.0) + abs(dx_m - 10.0)
+        candidates.append((score, rev, ny, nx, dy_m, dx_m))
 
-    # 近似メートル換算
-    mean_lat = (lats + late) / 2.0
-    m_per_deg_lat = 111_320.0
-    m_per_deg_lon = 111_320.0 * math.cos(math.radians(mean_lat))
+    if not candidates:
+        # gml:high が信用できないケース → 近い因数分解を試みる
+        n = len(body)
+        approx_ratio = abs((late - lats) / max((lone - lons), 1e-12))
+        best = None
+        for ny in range(2, int(np.sqrt(n)) + 2):
+            if n % ny != 0:
+                continue
+            nx = n // ny
+            dlat = (late - lats) / max(ny - 1, 1)
+            dlon = (lone - lons) / max(nx - 1, 1)
+            mean_lat = (lats + late) / 2.0
+            m_per_deg_lat = 111_320.0
+            m_per_deg_lon = 111_320.0 * math.cos(math.radians(mean_lat))
+            dy_m = abs(dlat) * m_per_deg_lat
+            dx_m = abs(dlon) * max(m_per_deg_lon, 1e-9)
+            score = abs(dy_m - 10.0) + abs(dx_m - 10.0) + abs((ny/nx) - approx_ratio)
+            if (best is None) or (score < best[0]):
+                best = (score, ny, nx, dy_m, dx_m)
+        if best is None:
+            raise ValueError("グリッド形状の推定に失敗しました。")
+        score, ny, nx, dy_m, dx_m = best
+        rev = False
+    else:
+        # 10m に最も近い候補を採用
+        score, rev, ny, nx, dy_m, dx_m = sorted(candidates, key=lambda x: x[0])[0]
 
-    dy_m = abs(dlat) * m_per_deg_lat
-    dx_m = abs(dlon) * max(m_per_deg_lon, 1e-9)
-
-    # 10mチェック（±tol_m で許容）
-    def is_10m(v): 
+    # 10m 判定（±tol_m）
+    def ok10(v):
         return (10.0 - tol_m) <= v <= (10.0 + tol_m)
 
-    if not (is_10m(dy_m) and is_10m(dx_m)):
-        raise ValueError(
-            f"このXMLは10mメッシュではありません（推定解像度: dy≈{dy_m:.2f} m, dx≈{dx_m:.2f} m）。"
-        )
+    if not (ok10(dy_m) and ok10(dx_m)):
+        raise ValueError(f"このXMLは10mメッシュではありません（推定解像度: dy≈{dy_m:.2f} m, dx≈{dx_m:.2f} m）。")
 
-    lat_grid = np.array([lats + dlat * i for i in range(nola)])
-    lon_grid = np.array([lons + dlon * j for j in range(nolo)])
+    # 座標軸
+    dlat = (late - lats) / max(ny - 1, 1)
+    dlon = (lone - lons) / max(nx - 1, 1)
+    lat_grid = np.array([lats + dlat * i for i in range(ny)])
+    lon_grid = np.array([lons + dlon * j for j in range(nx)])
 
-    nli10m = body.reshape((nola, nolo))[::-1, :]  # 北が上になるよう上下反転
-    nli10m[nli10m < -990] = np.nan  # 欠損値処理
+    # データ整形（北が上になるよう上下反転）
+    arr = body.reshape((ny, nx))
+    elev = arr[::-1, :]  # 上下反転は常に実施
+
+    # 欠損値処理（基盤地図の穴抜けコード対策）
+    elev[elev < -990] = np.nan
 
     lalodomain = [lats, late, lons, lone]
-    return nli10m, lat_grid, lon_grid, lalodomain, dy_m, dx_m
+    return elev, lat_grid, lon_grid, lalodomain, dy_m, dx_m
 
 
 def to_2d_grid(arr, name):
@@ -169,7 +208,7 @@ def safe_scalar(val, name):
 # ============================================================
 # 実行部分
 # ============================================================
-if st.button("🌏 マップ作成（10m標高のみ）"):
+if st.button("🌏 マップ作成"):
     if not xml_file:
         st.info("XMLファイルを指定してください。")
         st.stop()
@@ -179,7 +218,7 @@ if st.button("🌏 マップ作成（10m標高のみ）"):
 
     try:
         # --- XML パース（10mチェック付） ---
-        nli10m, lat10m, lon10m, lalodomain, dy_m, dx_m = parse_gml_tuplelist_xml_10m(xml_file.getvalue())
+        nli10m, lat10m, lon10m, lalodomain, dy_m, dx_m = parse_gml_tuplelist_xml_10m(xml_file.getvalue(), tol_m=3.0)
         st.caption(f"推定メッシュ解像度: dy≈{dy_m:.2f} m, dx≈{dx_m:.2f} m（10m判定OK）")
 
         # --- AMDデータ取得 ---
@@ -190,7 +229,7 @@ if st.button("🌏 マップ作成（10m標高のみ）"):
         st.write(f"気象データ shape: {np.shape(Msh)}")
         st.write(f"標高データ(1km) shape: {np.shape(Msha)}")
 
-        # --- 2D化 ---
+        # --- 2D化（1km） ---
         Msh2D = to_2d_grid(Msh, "気象データ(1km)")
         Msha2D = to_2d_grid(Msha, "標高データ(1km)")
 
@@ -306,4 +345,4 @@ if st.button("🌏 マップ作成（10m標高のみ）"):
         st.error(f"❌ 処理中にエラーが発生しました: {e}")
 
 else:
-    st.info("10m標高XMLと日付を指定してから「🌏 マップ作成（10m標高のみ）」を押してください。")
+    st.info("10m標高XMLと日付を指定してから「🌏 マップ作成」を押してください。")
