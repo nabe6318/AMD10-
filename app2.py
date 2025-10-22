@@ -1,5 +1,5 @@
 # app.py
-# 標高補正付き気象マップ（10mメッシュ + 1kmメッシュを別表示）
+# 標高補正付き気象マップ（10mメッシュ + 1kmメッシュを別表示：気温のみ）
 # O. Watanabe, Shinshu Univ. / AMD_Tools4 を利用
 
 import streamlit as st
@@ -25,24 +25,12 @@ st.markdown(
 )
 
 # ============================================================
-# 気象要素の選択肢
+# 気象要素の選択肢（気温のみ）
 # ============================================================
 ELEMENT_OPTIONS = {
     "日平均気温 (TMP_mea)": "TMP_mea",
     "日最高気温 (TMP_max)": "TMP_max",
     "日最低気温 (TMP_min)": "TMP_min",
-    "降水量 (APCP)": "APCP",
-    "降水量高精度 (APCPRA)": "APCPRA",
-    "降水の有無 (OPR)": "OPR",
-    "日照時間 (SSD)": "SSD",
-    "全天日射量 (GSR)": "GSR",
-    "下向き長波放射量 (DLR)": "DLR",
-    "相対湿度 (RH)": "RH",
-    "風速 (WIND)": "WIND",
-    "積雪深 (SD)": "SD",
-    "積雪水量 (SWE)": "SWE",
-    "降雪水量 (SFW)": "SFW",
-    "予報気温の確からしさ (PTMP)": "PTMP"
 }
 
 # ============================================================
@@ -250,7 +238,7 @@ if st.button("🌏 マップ作成"):
             lon_km = np.linspace(lon10m.min(), lon10m.max(), nx)
 
         # =======================================================
-        # 図の描画（別表示タブ）
+        # 図の描画（別表示タブ）  ※ 気温固定スケール（-30～+50℃）
         # =======================================================
         st.subheader("🗺️ マップ表示（10m補正 と 1kmメッシュ 別表示）")
         tabs = st.tabs(["🗺️ 10m DEM補正マップ", "🧭 1kmメッシュ（元データ）"])
@@ -265,16 +253,16 @@ if st.button("🌏 マップ作成"):
         lon_span = float(np.max(lon10m) - np.min(lon10m))
         yoko = tate * (lon_span / max(1e-9, lat_span)) + 2
 
-        # --- タブ1: 10m DEM補正 ---
+        # --- タブ1: 10m DEM補正（固定スケール）
         with tabs[0]:
             figtitle = f"{nam} [{uni}] on {tim[0].strftime('%Y-%m-%d')} (10m補正)"
             fig = plt.figure(figsize=(yoko, tate))
             ax = plt.gca()
             ax.set_facecolor('0.85')
 
-            vmin = np.nanmin(corrected)
-            vmax = np.nanmax(corrected)
-            levels = np.linspace(vmin, vmax, 20)
+            vmin, vmax = -30.0, 50.0
+            levels = np.linspace(vmin, vmax, 17)  # 5℃刻み（調整可）
+
             cf = ax.contourf(lon10m, lat10m, corrected, levels, cmap=base_cmap, extend='both')
             cbar1 = plt.colorbar(cf, ax=ax, fraction=0.025, pad=0.02)
             cbar1.set_label(f"DEM補正後 {nam} [{uni}]")
@@ -284,7 +272,7 @@ if st.button("🌏 マップ作成"):
             ax.set_ylabel("Latitude")
             st.pyplot(fig)
 
-        # --- タブ2: 1kmメッシュ ---
+        # --- タブ2: 1kmメッシュ（固定スケール）
         with tabs[1]:
             if (Msh2D is not None) and (lat_km is not None) and (lon_km is not None):
                 figtitle_km = f"1kmメッシュ {nam} [{uni}] on {tim[0].strftime('%Y-%m-%d')}"
@@ -292,7 +280,9 @@ if st.button("🌏 マップ作成"):
                 ax_km = plt.gca()
                 ax_km.set_facecolor('0.85')
 
-                pcm = ax_km.pcolormesh(lon_km, lat_km, Msh2D, shading='auto', cmap=base_cmap)
+                vmin2, vmax2 = -30.0, 50.0
+                pcm = ax_km.pcolormesh(lon_km, lat_km, Msh2D, shading='auto',
+                                       cmap=base_cmap, vmin=vmin2, vmax=vmax2)
                 cbar2 = plt.colorbar(pcm, ax=ax_km, fraction=0.025, pad=0.02)
                 cbar2.set_label(f"1kmメッシュ {nam} [{uni}]")
 
