@@ -1,5 +1,5 @@
 # app.py
-# 標高補正付き気象マップ（10mメッシュ + 1kmメッシュ + OSM重ね合わせ）
+# 標高補正付き気象マップ（10mメッシュ + 1kmメッシュを別表示）
 # O. Watanabe, Shinshu Univ. / AMD_Tools4 を利用
 
 import streamlit as st
@@ -13,19 +13,14 @@ import copy
 from datetime import date as _date
 import math
 
-# ★ 追加：OSM重ね合わせ用
-import folium
-from streamlit_folium import st_folium
-import branca.colormap as bcm
-from matplotlib import cm
-
 # ============================================================
 # 画面設定
 # ============================================================
-st.set_page_config(page_title="標高補正付き気象マップ（10m + 1km別表示 + OSM）", layout="wide")
+st.set_page_config(page_title="標高補正付き気象マップ（10m + 1km別表示）", layout="wide")
 
+# タイトル（10m専用に明示）
 st.markdown(
-    "<h2 style='text-align: center; font-size:22px;'>標高補正付き気象マップ（10mメッシュ + 1kmメッシュ + OSM重ね合わせ）</h2>",
+    "<h2 style='text-align: center; font-size:22px;'>標高補正付き気象マップ（10mメッシュ + 1kmメッシュ）</h2>",
     unsafe_allow_html=True
 )
 
@@ -57,17 +52,6 @@ xml_file = st.file_uploader("📂 10m標高メッシュXMLファイル（※10m�
 element_label = st.selectbox("気象要素を選択", list(ELEMENT_OPTIONS.keys()))
 element = ELEMENT_OPTIONS[element_label]
 date_sel = st.date_input("対象日を選択", value=_date.today())
-
-# OSMタブ専用UI（右サイド）
-with st.sidebar:
-    st.markdown("### 🗺️ OSM重ね合わせオプション")
-    osm_tiles = st.selectbox(
-        "背景地図タイル",
-        ["OpenStreetMap", "CartoDB positron", "CartoDB dark_matter", "Stamen Terrain", "Stamen Toner"],
-        index=0
-    )
-    overlay_opacity = st.slider("オーバーレイの不透明度", 0.0, 1.0, 0.6, 0.05)
-    show_layer_control = st.checkbox("レイヤーコントロールを表示", value=True)
 
 # ============================================================
 # ユーティリティ関数
@@ -221,30 +205,6 @@ def safe_scalar(val, name):
         st.warning(f"{name} がスカラーでなかったため平均値で補間します。shape={np.shape(val)}")
         return float(np.nanmean(val))
 
-# --- OSM オーバーレイ生成 ---
-def make_rgba_overlay(data2d, vmin=None, vmax=None, cmap_name="Spectral_r"):
-    """
-    2D配列（nanは透明）→ RGBA(uint8)配列（H,W,4）へ変換
-    """
-    arr = np.array(data2d, dtype=float)
-    mask = np.isnan(arr)
-
-    if vmin is None:
-        vmin = float(np.nanmin(arr))
-    if vmax is None:
-        vmax = float(np.nanmax(arr))
-    if vmax <= vmin:
-        vmax = vmin + 1e-9
-
-    norm = (arr - vmin) / (vmax - vmin)
-    norm = np.clip(norm, 0, 1)
-
-    cmap = cm.get_cmap(cmap_name)
-    rgba = cmap(norm)  # (H,W,4) float 0-1
-    rgba[mask, 3] = 0.0  # nanは完全透明
-    rgba_uint8 = (rgba * 255).astype(np.uint8)
-    return rgba_uint8, vmin, vmax
-
 # ============================================================
 # 実行部分
 # ============================================================
@@ -292,8 +252,8 @@ if st.button("🌏 マップ作成"):
         # =======================================================
         # 図の描画（別表示タブ）
         # =======================================================
-        st.subheader("🗺️ マップ表示（10m補正 と 1kmメッシュ と OSM重ね合わせ）")
-        tabs = st.tabs(["🗺️ 10m DEM補正マップ", "🧭 1kmメッシュ（元データ）", "🌍 OSM重ね合わせ（インタラクティブ）"])
+        st.subheader("🗺️ マップ表示（10m補正 と 1kmメッシュ 別表示）")
+        tabs = st.tabs(["🗺️ 10m DEM補正マップ", "🧭 1kmメッシュ（元データ）"])
 
         base_cmap = copy.copy(plt.cm.get_cmap("Spectral_r"))
         base_cmap.set_over('w', 1.0)
@@ -305,7 +265,7 @@ if st.button("🌏 マップ作成"):
         lon_span = float(np.max(lon10m) - np.min(lon10m))
         yoko = tate * (lon_span / max(1e-9, lat_span)) + 2
 
-        # --- タブ1: 10m DEM補正（静的）
+        # --- タブ1: 10m DEM補正 ---
         with tabs[0]:
             figtitle = f"{nam} [{uni}] on {tim[0].strftime('%Y-%m-%d')} (10m補正)"
             fig = plt.figure(figsize=(yoko, tate))
@@ -324,7 +284,7 @@ if st.button("🌏 マップ作成"):
             ax.set_ylabel("Latitude")
             st.pyplot(fig)
 
-        # --- タブ2: 1kmメッシュ（静的）
+        # --- タブ2: 1kmメッシュ ---
         with tabs[1]:
             if (Msh2D is not None) and (lat_km is not None) and (lon_km is not None):
                 figtitle_km = f"1kmメッシュ {nam} [{uni}] on {tim[0].strftime('%Y-%m-%d')}"
@@ -342,46 +302,6 @@ if st.button("🌏 マップ作成"):
                 st.pyplot(fig_km)
             else:
                 st.info("この領域では1kmメッシュデータが取得できませんでした。")
-
-        # --- タブ3: OSM重ね合わせ（インタラクティブ）
-        with tabs[2]:
-            # RGBA overlay を作成
-            rgba, vmin, vmax = make_rgba_overlay(corrected, cmap_name="Spectral_r")
-
-            # 地図中心とズーム
-            center_lat = float(np.nanmean(lat10m))
-            center_lon = float(np.nanmean(lon10m))
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles=osm_tiles, control_scale=True)
-
-            # 画像の地理範囲（南西・北東）
-            bounds = [[float(lat10m.min()), float(lon10m.min())],
-                      [float(lat10m.max()), float(lon10m.max())]]
-
-            # ImageOverlay（origin='upper' で上が北）
-            folium.raster_layers.ImageOverlay(
-                name=f"DEM補正 {nam} [{uni}]",
-                image=rgba,           # (H,W,4) の uint8 RGBA
-                bounds=bounds,
-                opacity=overlay_opacity,
-                interactive=False,
-                cross_origin=False,
-                zindex=1,
-                origin="upper"
-            ).add_to(m)
-
-            # 凡例（branca）
-            colormap = bcm.LinearColormap(
-                colors=[cm.get_cmap("Spectral_r")(x) for x in np.linspace(0, 1, 10)],
-                vmin=float(vmin), vmax=float(vmax)
-            )
-            colormap.caption = f"DEM補正後 {nam} [{uni}]"
-            colormap.add_to(m)
-
-            # レイヤーコントロール
-            if show_layer_control:
-                folium.LayerControl(collapsed=False).add_to(m)
-
-            st_folium(m, width=None, height=600)
 
         # =======================================================
         # CSV出力
