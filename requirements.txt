@@ -1,0 +1,8 @@
+streamlit
+streamlit-folium>=0.12.0
+folium
+pandas
+numpy
+matplotlib
+xarray
+netCDF4
