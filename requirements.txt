@@ -1,3 +1,4 @@
+# 基本モジュール
 streamlit
 streamlit-folium>=0.12.0
 folium
@@ -6,3 +7,10 @@ numpy
 matplotlib
 xarray
 netCDF4
+
+# OSM重ね合わせ・可視化強化用
+branca>=0.7.0
+
+# XML解析・日付処理用
+lxml>=4.9.0
+python-dateutil>=2.8.2
