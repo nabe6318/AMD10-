@@ -16,10 +16,10 @@ import math
 # ============================================================
 # 画面設定
 # ============================================================
-st.set_page_config(page_title="標高補正付き気象マップ（10m + 1km別表示）", layout="wide")
+st.set_page_config(page_title="標高補正メッシュ気象データ（10m + 1km別表示）", layout="wide")
 
 st.markdown(
-    "<h2 style='text-align: center; font-size:22px;'>標高補正付き気象マップ（10mメッシュ + 1kmメッシュ）</h2>",
+    "<h2 style='text-align: center; font-size:22px;'>標高補正メッシュ気象データ（10mメッシュ + 1kmメッシュ）</h2>",
     unsafe_allow_html=True
 )
 
@@ -263,3 +263,4 @@ if st.button("🌏 マップ作成"):
 
 else:
     st.info("10m標高XMLと日付を指定してから「🌏 マップ作成」を押してください。")
+
